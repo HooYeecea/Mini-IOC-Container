@@ -19,9 +19,9 @@ public class MiniApplicationContext {
         // 2. 遍历，创建实例，放进容器
         for (Class<?> clazz : classes) {
             try {
-                Object instance = clazz.getDeclaredConstructor().newInstance();
+                Object instance = clazz.getDeclaredConstructor().newInstance(); // 创建实例
                 String beanName = clazz.getSimpleName();  // 先用简单类名做 key
-                beans.put(beanName, instance);
+                beans.put(beanName, instance);// 把beans实例放进容器
                 System.out.println("注册 Bean: " + beanName);
             } catch (Exception e) {
                 throw new RuntimeException("创建 Bean 失败: " + clazz.getName(), e);
