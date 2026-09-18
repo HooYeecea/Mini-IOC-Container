@@ -12,9 +12,7 @@ public class Main {
         MiniApplicationContext context = new MiniApplicationContext("com.miniioccontainer.demo");
 
         UserService userService = context.getBean(UserService.class);
-        System.out.println("拿到 Bean: " + userService);
-
-        OrderService orderService = context.getBean(OrderService.class);
-        System.out.println("拿到 Bean: " + orderService);
+        System.out.println("userService = " + userService);
+        System.out.println("userService.orderService = " + userService.getOrderService());
     }
 }
