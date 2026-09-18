@@ -5,36 +5,128 @@ import com.miniioccontainer.annotation.MyPrimary;
 import com.miniioccontainer.annotation.MyQualifier;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class MiniApplicationContext {
 
     // Bean 容器：key 是 Bean 名字，value 是 Bean 实例
     private final Map<String, Object> beans = new HashMap<>();
+    // XML primary="true" 或类上 @MyPrimary 的 Bean 名
+    private final Set<String> primaryBeanNames = new HashSet<>();
+    // 仅 XML 注册的 Bean 需要按 <property ref> 注入
+    private final Map<String, List<XmlBeanDefinition.Property>> xmlProperties = new HashMap<>();
 
-    public MiniApplicationContext(String basePackage) {
-        // 1. 扫描包，拿到所有带 @MyComponent 的类
+    /**
+     * location 以 .xml 结尾：从 classpath 读 XML（可含 component-scan）。
+     * 否则：当作包名，只扫 @MyComponent。
+     */
+    public MiniApplicationContext(String location) {
+        if (location != null && location.endsWith(".xml")) {
+            loadFromXml(location);
+        } else {
+            registerAnnotationBeans(location);
+        }
+
+        for (Object bean : beans.values()) {
+            injectDependencies(bean);
+        }
+        applyXmlPropertyInjections();
+    }
+
+    private void loadFromXml(String xmlClasspath) {
+        XmlBeanDefinitionReader.Result config = XmlBeanDefinitionReader.load(xmlClasspath);
+
+        // 先注册注解 Bean，再注册 XML Bean：同类冲突时注解优先
+        for (String basePackage : config.getScanPackages()) {
+            registerAnnotationBeans(basePackage);
+        }
+        for (XmlBeanDefinition definition : config.getBeans()) {
+            registerXmlBean(definition);
+        }
+    }
+
+    private void registerAnnotationBeans(String basePackage) {
         List<Class<?>> classes = PackageScanner.scan(basePackage);
-
-        // 2. 阶段 1：实例化所有 Bean，放进容器
         for (Class<?> clazz : classes) {
             try {
-                Object instance = clazz.getDeclaredConstructor().newInstance();
                 String beanName = getBeanName(clazz);
+                Object existing = beans.get(beanName);
+                if (existing != null) {
+                    if (existing.getClass().equals(clazz)) {
+                        continue;
+                    }
+                    throw new RuntimeException(
+                            "Bean 名重复: " + beanName
+                                    + "，已有 " + existing.getClass().getName()
+                                    + "，注解又注册 " + clazz.getName());
+                }
+                Object instance = clazz.getDeclaredConstructor().newInstance();
                 beans.put(beanName, instance);
-                System.out.println("注册 Bean: " + beanName);
+                if (clazz.isAnnotationPresent(MyPrimary.class)) {
+                    primaryBeanNames.add(beanName);
+                }
+                System.out.println("注册 Bean: " + beanName + " (注解)");
+            } catch (RuntimeException e) {
+                throw e;
             } catch (Exception e) {
                 throw new RuntimeException("创建 Bean 失败: " + clazz.getName(), e);
             }
         }
+    }
 
-        // 3. 阶段 2：给每个 Bean 注入依赖
-        for (Object bean : beans.values()) {
-            injectDependencies(bean);
+    private void registerXmlBean(XmlBeanDefinition definition) {
+        Class<?> clazz;
+        try {
+            clazz = Class.forName(definition.getClassName(), false,
+                    Thread.currentThread().getContextClassLoader());
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException("XML 中找不到类: " + definition.getClassName(), e);
         }
+
+        if (hasBeanOfExactClass(clazz)) {
+            String xmlName = definition.getId().isEmpty() ? getBeanName(clazz) : definition.getId();
+            System.out.println("跳过 XML Bean: " + xmlName
+                    + "，类 " + clazz.getName() + " 已由注解注册");
+            return;
+        }
+
+        String beanName = definition.getId().isEmpty() ? getBeanName(clazz) : definition.getId();
+        Object existing = beans.get(beanName);
+        if (existing != null) {
+            throw new RuntimeException(
+                    "Bean 名重复: " + beanName
+                            + "，已有 " + existing.getClass().getName()
+                            + "，XML 又注册 " + clazz.getName());
+        }
+
+        try {
+            Object instance = clazz.getDeclaredConstructor().newInstance();
+            beans.put(beanName, instance);
+            if (definition.isPrimary()) {
+                primaryBeanNames.add(beanName);
+            }
+            if (!definition.getProperties().isEmpty()) {
+                xmlProperties.put(beanName, definition.getProperties());
+            }
+            System.out.println("注册 Bean: " + beanName + " (XML)");
+        } catch (Exception e) {
+            throw new RuntimeException("创建 XML Bean 失败: " + clazz.getName(), e);
+        }
+    }
+
+    private boolean hasBeanOfExactClass(Class<?> clazz) {
+        for (Object bean : beans.values()) {
+            if (bean.getClass().equals(clazz)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -52,7 +144,7 @@ public class MiniApplicationContext {
      * 消歧顺序：
      * 1. @MyAutowired(name = "...") 按名字直接拿
      * 2. @MyQualifier 在同类型候选里按限定名精确匹配
-     * 3. 按类型查找；多个候选时选唯一的 @MyPrimary
+     * 3. 按类型查找；多个候选时选唯一的 @MyPrimary / XML primary
      */
     private void injectDependencies(Object bean) {
         Class<?> clazz = bean.getClass();
@@ -100,6 +192,62 @@ public class MiniApplicationContext {
         }
     }
 
+    private void applyXmlPropertyInjections() {
+        for (Map.Entry<String, List<XmlBeanDefinition.Property>> entry : xmlProperties.entrySet()) {
+            String beanName = entry.getKey();
+            Object bean = beans.get(beanName);
+            for (XmlBeanDefinition.Property property : entry.getValue()) {
+                Object dependency = getBean(property.getRef());
+                if (dependency == null) {
+                    throw new RuntimeException(
+                            "XML 找不到 ref=\"" + property.getRef()
+                                    + "\" 的 Bean（注入到 " + beanName
+                                    + "." + property.getName() + "）");
+                }
+                if (!injectFieldByName(bean, property.getName(), dependency)
+                        && !injectSetter(bean, property.getName(), dependency)) {
+                    throw new RuntimeException(
+                            "XML Bean " + beanName + " 找不到属性: " + property.getName());
+                }
+                System.out.println("XML 注入: " + bean.getClass().getSimpleName()
+                        + "." + property.getName() + " <- " + property.getRef());
+            }
+        }
+    }
+
+    private boolean injectFieldByName(Object bean, String fieldName, Object dependency) {
+        Class<?> current = bean.getClass();
+        while (current != null) {
+            try {
+                Field field = current.getDeclaredField(fieldName);
+                field.setAccessible(true);
+                field.set(bean, dependency);
+                return true;
+            } catch (NoSuchFieldException e) {
+                current = current.getSuperclass();
+            } catch (IllegalAccessException e) {
+                throw new RuntimeException("XML 注入字段失败: " + fieldName, e);
+            }
+        }
+        return false;
+    }
+
+    private boolean injectSetter(Object bean, String propertyName, Object dependency) {
+        String setterName = "set" + Character.toUpperCase(propertyName.charAt(0))
+                + propertyName.substring(1);
+        for (Method method : bean.getClass().getMethods()) {
+            if (method.getName().equals(setterName) && method.getParameterCount() == 1) {
+                try {
+                    method.invoke(bean, dependency);
+                    return true;
+                } catch (Exception e) {
+                    throw new RuntimeException("XML 注入 setter 失败: " + setterName, e);
+                }
+            }
+        }
+        return false;
+    }
+
     /**
      * 按名字拿 Bean
      */
@@ -109,7 +257,7 @@ public class MiniApplicationContext {
 
     /**
      * 按类型拿 Bean。
-     * 多个同类型候选时，选唯一的 @MyPrimary；没有或超过一个 Primary 则报错。
+     * 多个同类型候选时，选唯一的 Primary；没有或超过一个 Primary 则报错。
      */
     public <T> T getBean(Class<T> type) {
         return resolveByType(type, "");
@@ -127,7 +275,7 @@ public class MiniApplicationContext {
      * - 指定了 qualifier：只保留限定名匹配的候选
      * - 0 个候选：返回 null
      * - 1 个候选：直接返回
-     * - 多个候选：选唯一的 @MyPrimary，否则报错
+     * - 多个候选：选唯一的 Primary，否则报错
      */
     private <T> T resolveByType(Class<T> type, String qualifier) {
         List<Map.Entry<String, Object>> candidates = findBeansByType(type);
@@ -162,7 +310,7 @@ public class MiniApplicationContext {
 
         List<Map.Entry<String, Object>> primaries = new ArrayList<>();
         for (Map.Entry<String, Object> entry : candidates) {
-            if (entry.getValue().getClass().isAnnotationPresent(MyPrimary.class)) {
+            if (primaryBeanNames.contains(entry.getKey())) {
                 primaries.add(entry);
             }
         }
@@ -171,14 +319,14 @@ public class MiniApplicationContext {
         }
         if (primaries.size() > 1) {
             throw new RuntimeException(
-                    "类型 " + type.getName() + " 有多个 @MyPrimary Bean: "
+                    "类型 " + type.getName() + " 有多个 Primary Bean: "
                             + joinBeanNames(primaries)
-                            + "，同一类型只能有一个 @MyPrimary");
+                            + "，同一类型只能有一个 Primary");
         }
         throw new RuntimeException(
                 "找到多个类型为 " + type.getName() + " 的 Bean: "
                         + joinBeanNames(candidates)
-                        + "，请用 @MyQualifier 指定，或给其中一个加 @MyPrimary");
+                        + "，请用 @MyQualifier 指定，或给其中一个加 @MyPrimary / XML primary");
     }
 
     private List<Map.Entry<String, Object>> findBeansByType(Class<?> type) {

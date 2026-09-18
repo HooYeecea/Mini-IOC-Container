@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans>
+    <component-scan base-package="com.miniioccontainer.demo"/>
+
+    <!-- 纯 XML Bean：没有 @MyComponent，用 property 按名字注入注解 Bean -->
+    <bean id="smsService" class="com.miniioccontainer.demo.SmsService">
+        <property name="orderService" ref="orderServiceImpl"/>
+    </bean>
+
+    <!-- 同类已有 @MyComponent，注解优先，这条会被跳过 -->
+    <bean id="orderServiceFromXml" class="com.miniioccontainer.demo.OrderServiceImpl"/>
+</beans>
