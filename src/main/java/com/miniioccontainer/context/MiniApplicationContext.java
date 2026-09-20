@@ -1,8 +1,15 @@
 package com.miniioccontainer.context;
 
+import com.miniioccontainer.annotation.MyAround;
+import com.miniioccontainer.annotation.MyAspect;
 import com.miniioccontainer.annotation.MyAutowired;
+import com.miniioccontainer.annotation.MyLog;
 import com.miniioccontainer.annotation.MyPrimary;
 import com.miniioccontainer.annotation.MyQualifier;
+import com.miniioccontainer.aop.AopAdvice;
+import com.miniioccontainer.aop.AopProxyFactory;
+import com.miniioccontainer.aop.MiniAopInterceptor;
+import com.miniioccontainer.aop.MyJoinPoint;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -15,8 +22,10 @@ import java.util.Set;
 
 public class MiniApplicationContext {
 
-    // Bean 容器：key 是 Bean 名字，value 是 Bean 实例
+    // Bean 容器：key 是 Bean 名字，value 是对外暴露的实例（可能是 AOP 代理）
     private final Map<String, Object> beans = new HashMap<>();
+    // 原始目标对象，字段注入必须打在这个上面，不能打在 JDK 代理上
+    private final Map<String, Object> targets = new HashMap<>();
     // XML primary="true" 或类上 @MyPrimary 的 Bean 名
     private final Set<String> primaryBeanNames = new HashSet<>();
     // 仅 XML 注册的 Bean 需要按 <property ref> 注入
@@ -33,8 +42,11 @@ public class MiniApplicationContext {
             registerAnnotationBeans(location);
         }
 
-        for (Object bean : beans.values()) {
-            injectDependencies(bean);
+        // 先换成代理，再注入，这样依赖方拿到的就是代理
+        applyAopProxies();
+
+        for (Object target : targets.values()) {
+            injectDependencies(target);
         }
         applyXmlPropertyInjections();
     }
@@ -67,7 +79,7 @@ public class MiniApplicationContext {
                                     + "，注解又注册 " + clazz.getName());
                 }
                 Object instance = clazz.getDeclaredConstructor().newInstance();
-                beans.put(beanName, instance);
+                registerInstance(beanName, instance);
                 if (clazz.isAnnotationPresent(MyPrimary.class)) {
                     primaryBeanNames.add(beanName);
                 }
@@ -107,7 +119,7 @@ public class MiniApplicationContext {
 
         try {
             Object instance = clazz.getDeclaredConstructor().newInstance();
-            beans.put(beanName, instance);
+            registerInstance(beanName, instance);
             if (definition.isPrimary()) {
                 primaryBeanNames.add(beanName);
             }
@@ -120,13 +132,96 @@ public class MiniApplicationContext {
         }
     }
 
+    private void registerInstance(String beanName, Object instance) {
+        beans.put(beanName, instance);
+        targets.put(beanName, instance);
+    }
+
     private boolean hasBeanOfExactClass(Class<?> clazz) {
-        for (Object bean : beans.values()) {
+        for (Object bean : targets.values()) {
             if (bean.getClass().equals(clazz)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * 收集 @MyAround，把带 @MyLog 且有接口的 Bean 换成 JDK 代理。
+     * 切面自身不代理。
+     */
+    private void applyAopProxies() {
+        List<AopAdvice> advices = collectAroundAdvices();
+        if (advices.isEmpty()) {
+            return;
+        }
+
+        for (Map.Entry<String, Object> entry : targets.entrySet()) {
+            Object target = entry.getValue();
+            Class<?> targetClass = target.getClass();
+            if (targetClass.isAnnotationPresent(MyAspect.class)) {
+                continue;
+            }
+            if (!hasMyLogMethod(targetClass)) {
+                continue;
+            }
+
+            Class<?>[] interfaces = businessInterfaces(targetClass);
+            if (interfaces.length == 0) {
+                System.out.println("跳过 AOP: " + entry.getKey()
+                        + " 有 @MyLog，但没有业务接口，JDK Proxy 无法代理");
+                continue;
+            }
+
+            Object proxy = AopProxyFactory.create(target, interfaces, advices);
+            beans.put(entry.getKey(), proxy);
+            System.out.println("AOP 代理: " + entry.getKey());
+        }
+    }
+
+    private List<AopAdvice> collectAroundAdvices() {
+        List<AopAdvice> advices = new ArrayList<>();
+        for (Object bean : targets.values()) {
+            Class<?> clazz = bean.getClass();
+            if (!clazz.isAnnotationPresent(MyAspect.class)) {
+                continue;
+            }
+            for (Method method : clazz.getDeclaredMethods()) {
+                if (!method.isAnnotationPresent(MyAround.class)) {
+                    continue;
+                }
+                if (method.getParameterCount() != 1
+                        || !MyJoinPoint.class.isAssignableFrom(method.getParameterTypes()[0])) {
+                    throw new RuntimeException(
+                            "@MyAround 方法必须是 Object xxx(MyJoinPoint): "
+                                    + clazz.getName() + "." + method.getName());
+                }
+                advices.add(new AopAdvice(bean, method));
+                System.out.println("注册切面通知: "
+                        + clazz.getSimpleName() + "." + method.getName());
+            }
+        }
+        return advices;
+    }
+
+    private boolean hasMyLogMethod(Class<?> clazz) {
+        for (Method method : clazz.getDeclaredMethods()) {
+            if (method.isAnnotationPresent(MyLog.class)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Class<?>[] businessInterfaces(Class<?> clazz) {
+        List<Class<?>> result = new ArrayList<>();
+        for (Class<?> iface : clazz.getInterfaces()) {
+            String name = iface.getName();
+            if (!name.startsWith("java.") && !name.startsWith("javax.")) {
+                result.add(iface);
+            }
+        }
+        return result.toArray(new Class<?>[0]);
     }
 
     /**
@@ -183,9 +278,11 @@ public class MiniApplicationContext {
             try {
                 field.setAccessible(true);
                 field.set(bean, dependency);
+                Object injected = MiniAopInterceptor.unwrap(dependency);
                 System.out.println("注入: " + clazz.getSimpleName()
                         + "." + field.getName() + " <- "
-                        + dependency.getClass().getSimpleName());
+                        + injected.getClass().getSimpleName()
+                        + (injected != dependency ? " (AOP 代理)" : ""));
             } catch (IllegalAccessException e) {
                 throw new RuntimeException("注入失败: " + field.getName(), e);
             }
@@ -195,7 +292,10 @@ public class MiniApplicationContext {
     private void applyXmlPropertyInjections() {
         for (Map.Entry<String, List<XmlBeanDefinition.Property>> entry : xmlProperties.entrySet()) {
             String beanName = entry.getKey();
-            Object bean = beans.get(beanName);
+            Object bean = targets.get(beanName);
+            if (bean == null) {
+                bean = beans.get(beanName);
+            }
             for (XmlBeanDefinition.Property property : entry.getValue()) {
                 Object dependency = getBean(property.getRef());
                 if (dependency == null) {
@@ -346,7 +446,8 @@ public class MiniApplicationContext {
         if (qualifier.equals(beanName)) {
             return true;
         }
-        MyQualifier annotation = bean.getClass().getAnnotation(MyQualifier.class);
+        MyQualifier annotation = MiniAopInterceptor.unwrap(bean).getClass()
+                .getAnnotation(MyQualifier.class);
         return annotation != null && qualifier.equals(annotation.value());
     }
 

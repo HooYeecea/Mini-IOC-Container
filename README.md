@@ -13,6 +13,7 @@ It can register beans from annotations, from XML, or from both. After startup, t
   - `@MyQualifier` or `@MyAutowired(name = "...")`
 - XML config: `<component-scan>`, `<bean>`, `<property ref>`
 - If the same class is configured by both annotation and XML, the **annotation wins**
+- Simple AOP: `@MyLog` pointcut + `@MyAround`, JDK dynamic proxy (interface-only)
 
 ## Requirements
 
@@ -53,6 +54,9 @@ If the constructor argument ends with `.xml`, it is treated as XML. Otherwise it
 | `@MyAutowired` | field | Inject a dependency by type. Use `name` to inject by bean name. |
 | `@MyPrimary` | class | Preferred candidate when several beans share the same type. |
 | `@MyQualifier("beanName")` | field or class | Pick one candidate by name. Takes precedence over `@MyPrimary`. |
+| `@MyAspect` | class | Marks an aspect. Also needs `@MyComponent` (or XML). |
+| `@MyAround` | method | Around advice. Signature must be `Object xxx(MyJoinPoint)`. |
+| `@MyLog` | method | Pointcut marker: intercept this method. |
 
 Example:
 
@@ -109,13 +113,24 @@ When mixing annotation and XML:
 - Same class in both → keep the annotation bean, skip the XML entry
 - Different classes, same bean name → error
 
+## AOP
+
+1. Mark target methods with `@MyLog`. The class must implement an interface (JDK proxy).
+2. Write an aspect: `@MyComponent` + `@MyAspect`, with a `@MyAround` method that calls `joinPoint.proceed()`.
+3. The container creates proxies **before** injection, so injected fields receive the proxy.
+
+`OrderServiceImpl.getName()` is intercepted. `OrderServiceV2` has no `@MyLog`, so it is not proxied.
+
+Limitations: no class proxy (CGLIB), no AspectJ `execution(...)` expressions, no `@Before` / `@After`, no XML `<aop:config>`.
+
 ## Project layout
 
 ```
 src/main/java/com/miniioccontainer/
-  annotation/          # @MyComponent, @MyAutowired, @MyPrimary, @MyQualifier
+  annotation/          # IoC + AOP annotations
+  aop/                 # JoinPoint, JDK proxy
   context/             # scanner, XML reader, MiniApplicationContext
-  demo/                # sample beans
+  demo/                # sample beans and LogAspect
   Main.java
 src/main/resources/
   beans.xml
@@ -123,4 +138,4 @@ src/main/resources/
 
 ## Out of scope
 
-This is a learning container, not a Spring replacement. It does not implement constructor injection, bean scopes, lifecycle callbacks, AOP, or the full Spring XML schema.
+This is a learning container, not a Spring replacement. It does not implement constructor injection, bean scopes, lifecycle callbacks, CGLIB, or the full Spring XML / AspectJ feature set.

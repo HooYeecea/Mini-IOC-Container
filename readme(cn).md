@@ -13,6 +13,7 @@ Bean 可以用注解注册，也可以用 XML 注册，或两者一起用。启�
   - `@MyQualifier` 或 `@MyAutowired(name = "...")`
 - XML 配置：`<component-scan>`、`<bean>`、`<property ref>`
 - 同一个类既打了注解又写了 XML 时，**以注解为准**
+- 简单 AOP：`@MyLog` 切点 + `@MyAround`，JDK 动态代理（仅限有接口的 Bean）
 
 ## 环境
 
@@ -53,6 +54,9 @@ SmsService smsService = (SmsService) context.getBean("smsService");
 | `@MyAutowired` | 字段 | 按类型注入。可用 `name` 按 Bean 名注入。 |
 | `@MyPrimary` | 类 | 同类型有多个候选时的首选。 |
 | `@MyQualifier("beanName")` | 字段或类 | 按名字精确指定，优先级高于 `@MyPrimary`。 |
+| `@MyAspect` | 类 | 标记切面。同时需要 `@MyComponent`（或 XML 注册）。 |
+| `@MyAround` | 方法 | 环绕通知。签名必须是 `Object xxx(MyJoinPoint)`。 |
+| `@MyLog` | 方法 | 切点标记：拦截这个方法。 |
 
 示例：
 
@@ -109,13 +113,24 @@ public class UserService {
 - 同一个类两边都配了 → 保留注解 Bean，跳过 XML
 - 不同类抢同一个 Bean 名 → 报错
 
+## AOP
+
+1. 在目标方法上打 `@MyLog`。该类必须实现接口（JDK Proxy）。
+2. 写一个切面：`@MyComponent` + `@MyAspect`，`@MyAround` 方法里调用 `joinPoint.proceed()`。
+3. 容器先创建代理，再注入，所以字段里拿到的就是代理。
+
+Demo 里 `OrderServiceImpl.getName()` 会被拦截；`OrderServiceV2` 没有 `@MyLog`，不会被代理。
+
+第一版不做：无接口类的 CGLIB 代理、AspectJ `execution(...)` 表达式、`@Before` / `@After`、XML `<aop:config>`。
+
 ## 项目结构
 
 ```
 src/main/java/com/miniioccontainer/
-  annotation/          # @MyComponent、@MyAutowired、@MyPrimary、@MyQualifier
+  annotation/          # IoC 和 AOP 注解
+  aop/                 # JoinPoint、JDK 代理
   context/             # 包扫描、XML 解析、MiniApplicationContext
-  demo/                # 示例 Bean
+  demo/                # 示例 Bean 和 LogAspect
   Main.java
 src/main/resources/
   beans.xml
@@ -123,4 +138,4 @@ src/main/resources/
 
 ## 明确不做的事
 
-这是学习用容器，不是 Spring 替代品。没有构造器注入、Bean 作用域、生命周期回调、AOP，也不支持完整的 Spring XML Schema。
+这是学习用容器，不是 Spring 替代品。没有构造器注入、Bean 作用域、生命周期回调、CGLIB，也不支持完整的 Spring XML / AspectJ。

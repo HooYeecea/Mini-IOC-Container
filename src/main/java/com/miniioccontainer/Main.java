@@ -5,19 +5,27 @@ import com.miniioccontainer.demo.OrderService;
 import com.miniioccontainer.demo.SmsService;
 import com.miniioccontainer.demo.UserService;
 
+import java.lang.reflect.Proxy;
+
 public class Main {
     public static void main(String[] args) {
-        // beans.xml 里既有 component-scan（注解），也有 <bean>（XML）
         MiniApplicationContext context = new MiniApplicationContext("beans.xml");
 
         UserService userService = context.getBean(UserService.class);
         System.out.println("userService = " + userService);
 
         OrderService primary = context.getBean(OrderService.class);
+        System.out.println("primary is JDK proxy = "
+                + Proxy.isProxyClass(primary.getClass()));
         System.out.println("getBean(OrderService.class) = " + primary.getName());
 
+        System.out.println("userService.orderService is JDK proxy = "
+                + Proxy.isProxyClass(userService.getOrderService().getClass()));
         System.out.println("userService.orderService = "
                 + userService.getOrderService().getName());
+
+        System.out.println("userService.orderServiceV2 is JDK proxy = "
+                + Proxy.isProxyClass(userService.getOrderServiceV2().getClass()));
         System.out.println("userService.orderServiceV2 = "
                 + userService.getOrderServiceV2().getName());
 
@@ -28,7 +36,6 @@ public class Main {
         SmsService smsService = (SmsService) context.getBean("smsService");
         System.out.println("smsService.send() = " + smsService.send());
 
-        // 同类 XML 被跳过，容器里不应出现 orderServiceFromXml
         System.out.println("orderServiceFromXml = " + context.getBean("orderServiceFromXml"));
     }
 }
