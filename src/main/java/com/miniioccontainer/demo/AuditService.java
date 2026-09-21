@@ -14,4 +14,12 @@ public class AuditService {
     public String audit() {
         return "audit " + orderService.getName();
     }
+
+    public void start() {
+        System.out.println("AuditService init");
+    }
+
+    public void stop() {
+        System.out.println("AuditService destroy");
+    }
 }

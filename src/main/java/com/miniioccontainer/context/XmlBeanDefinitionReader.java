@@ -88,7 +88,10 @@ public class XmlBeanDefinitionReader {
         }
         String id = beanElement.getAttribute("id").trim();
         boolean primary = Boolean.parseBoolean(beanElement.getAttribute("primary"));
-        XmlBeanDefinition definition = new XmlBeanDefinition(id, className, primary);
+        String initMethod = beanElement.getAttribute("init-method").trim();
+        String destroyMethod = beanElement.getAttribute("destroy-method").trim();
+        XmlBeanDefinition definition = new XmlBeanDefinition(
+                id, className, primary, initMethod, destroyMethod);
 
         NodeList children = beanElement.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {

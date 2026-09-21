@@ -52,5 +52,7 @@ public class Main {
 
         AuditService auditService = (AuditService) context.getBean("auditService");
         System.out.println("auditService.audit() = " + auditService.audit());
+
+        context.close();
     }
 }

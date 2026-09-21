@@ -4,6 +4,8 @@ import com.miniioccontainer.annotation.MyAround;
 import com.miniioccontainer.annotation.MyAspect;
 import com.miniioccontainer.annotation.MyAutowired;
 import com.miniioccontainer.annotation.MyLog;
+import com.miniioccontainer.annotation.MyPostConstruct;
+import com.miniioccontainer.annotation.MyPreDestroy;
 import com.miniioccontainer.annotation.MyPrimary;
 import com.miniioccontainer.annotation.MyQualifier;
 import com.miniioccontainer.aop.AopAdvice;
@@ -11,8 +13,10 @@ import com.miniioccontainer.aop.AopProxyFactory;
 import com.miniioccontainer.aop.MiniAopInterceptor;
 import com.miniioccontainer.aop.MyJoinPoint;
 
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.util.ArrayDeque;
@@ -38,6 +42,9 @@ public class MiniApplicationContext {
     private final Set<String> finishedBeanNames = new HashSet<>();
     private final Set<String> beansInCreation = new HashSet<>();
     private final Deque<String> creationStack = new ArrayDeque<>();
+    // 初始化完成的顺序，关闭时倒序销毁
+    private final List<String> creationOrder = new ArrayList<>();
+    private boolean closed;
     // XML primary="true" 或类上 @MyPrimary 的 Bean 名
     private final Set<String> primaryBeanNames = new HashSet<>();
     private List<AopAdvice> advices = List.of();
@@ -85,7 +92,7 @@ public class MiniApplicationContext {
         for (Class<?> clazz : classes) {
             String beanName = getBeanName(clazz);
             registerDefinition(beanName, clazz, clazz.isAnnotationPresent(MyPrimary.class),
-                    List.of(), List.of(), "注解");
+                    List.of(), List.of(), "", "", "注解");
         }
     }
 
@@ -107,7 +114,8 @@ public class MiniApplicationContext {
 
         String beanName = definition.getId().isEmpty() ? getBeanName(clazz) : definition.getId();
         registerDefinition(beanName, clazz, definition.isPrimary(),
-                definition.getConstructorArgRefs(), definition.getProperties(), "XML");
+                definition.getConstructorArgRefs(), definition.getProperties(),
+                definition.getInitMethod(), definition.getDestroyMethod(), "XML");
     }
 
     private void registerDefinition(String beanName,
@@ -115,6 +123,8 @@ public class MiniApplicationContext {
                                     boolean primary,
                                     List<String> constructorArgRefs,
                                     List<XmlBeanDefinition.Property> properties,
+                                    String initMethod,
+                                    String destroyMethod,
                                     String source) {
         BeanDefinition existing = beanDefinitions.get(beanName);
         if (existing != null) {
@@ -126,8 +136,8 @@ public class MiniApplicationContext {
                             + "，已有 " + existing.clazz.getName()
                             + "，又注册 " + clazz.getName());
         }
-        beanDefinitions.put(beanName,
-                new BeanDefinition(beanName, clazz, constructorArgRefs, properties));
+        beanDefinitions.put(beanName, new BeanDefinition(
+                beanName, clazz, constructorArgRefs, properties, initMethod, destroyMethod));
         if (primary) {
             primaryBeanNames.add(beanName);
         }
@@ -301,9 +311,11 @@ public class MiniApplicationContext {
 
             injectDependencies(target);
             applyXmlProperties(definition, target);
+            invokeLifecycle(target, MyPostConstruct.class, definition.initMethod, "初始化");
 
             earlySingletonObjects.remove(beanName);
             finishedBeanNames.add(beanName);
+            creationOrder.add(beanName);
             return exposed;
         } finally {
             beansInCreation.remove(beanName);
@@ -500,6 +512,9 @@ public class MiniApplicationContext {
      * 若它正在创建且半成品已暴露，直接返回半成品以解开循环依赖。
      */
     public Object getBean(String name) {
+        if (closed) {
+            throw new RuntimeException("容器已关闭");
+        }
         if (finishedBeanNames.contains(name)) {
             return beans.get(name);
         }
@@ -653,20 +668,118 @@ public class MiniApplicationContext {
         return sb.toString();
     }
 
+    /**
+     * 按创建完成的相反顺序销毁单例。重复调用不会再次销毁。
+     */
+    public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        for (int i = creationOrder.size() - 1; i >= 0; i--) {
+            String beanName = creationOrder.get(i);
+            Object target = targets.get(beanName);
+            BeanDefinition definition = beanDefinitions.get(beanName);
+            if (target == null || definition == null) {
+                continue;
+            }
+            invokeLifecycle(target, MyPreDestroy.class, definition.destroyMethod, "销毁");
+        }
+    }
+
+    /**
+     * 先调用注解方法（父类在前），再调用 XML 指定的方法。同名方法只调用一次。
+     */
+    private void invokeLifecycle(Object target,
+                                 Class<? extends Annotation> annotation,
+                                 String xmlMethodName,
+                                 String label) {
+        List<Method> methods = new ArrayList<>();
+        collectLifecycleMethods(target.getClass(), annotation, methods);
+        Set<String> called = new HashSet<>();
+        for (Method method : methods) {
+            invokeNoArg(target, method, label);
+            called.add(method.getName());
+        }
+        if (xmlMethodName == null || xmlMethodName.isEmpty() || called.contains(xmlMethodName)) {
+            return;
+        }
+        Method xmlMethod = findNoArgMethod(target.getClass(), xmlMethodName);
+        if (xmlMethod == null) {
+            throw new RuntimeException(
+                    target.getClass().getName() + " 找不到无参方法: " + xmlMethodName);
+        }
+        invokeNoArg(target, xmlMethod, label);
+    }
+
+    private void collectLifecycleMethods(Class<?> clazz,
+                                         Class<? extends Annotation> annotation,
+                                         List<Method> result) {
+        if (clazz == null || clazz == Object.class) {
+            return;
+        }
+        collectLifecycleMethods(clazz.getSuperclass(), annotation, result);
+        for (Method method : clazz.getDeclaredMethods()) {
+            if (!method.isAnnotationPresent(annotation)) {
+                continue;
+            }
+            if (method.getParameterCount() != 0) {
+                throw new RuntimeException(
+                        annotation.getSimpleName() + " 方法必须无参: "
+                                + clazz.getName() + "." + method.getName());
+            }
+            result.add(method);
+        }
+    }
+
+    private Method findNoArgMethod(Class<?> clazz, String methodName) {
+        Class<?> current = clazz;
+        while (current != null && current != Object.class) {
+            try {
+                return current.getDeclaredMethod(methodName);
+            } catch (NoSuchMethodException e) {
+                current = current.getSuperclass();
+            }
+        }
+        return null;
+    }
+
+    private void invokeNoArg(Object target, Method method, String label) {
+        try {
+            method.setAccessible(true);
+            method.invoke(target);
+            System.out.println(label + ": " + target.getClass().getSimpleName()
+                    + "." + method.getName());
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause() == null ? e : e.getCause();
+            throw new RuntimeException(
+                    label + "失败: " + target.getClass().getName() + "." + method.getName(), cause);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException(
+                    label + "失败: " + target.getClass().getName() + "." + method.getName(), e);
+        }
+    }
+
     private static final class BeanDefinition {
         private final String name;
         private final Class<?> clazz;
         private final List<String> constructorArgRefs;
         private final List<XmlBeanDefinition.Property> properties;
+        private final String initMethod;
+        private final String destroyMethod;
 
         private BeanDefinition(String name,
                                Class<?> clazz,
                                List<String> constructorArgRefs,
-                               List<XmlBeanDefinition.Property> properties) {
+                               List<XmlBeanDefinition.Property> properties,
+                               String initMethod,
+                               String destroyMethod) {
             this.name = name;
             this.clazz = clazz;
             this.constructorArgRefs = constructorArgRefs;
             this.properties = properties;
+            this.initMethod = initMethod;
+            this.destroyMethod = destroyMethod;
         }
     }
 }
