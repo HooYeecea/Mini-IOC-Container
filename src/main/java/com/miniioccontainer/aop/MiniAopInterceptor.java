@@ -40,20 +40,22 @@ public class MiniAopInterceptor implements InvocationHandler {
 
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+        // 处理 null 参数
         if (args == null) {
             args = new Object[0];
         }
+        // 处理 Object 类的方法，直接调用目标方法
         if (method.getDeclaringClass() == Object.class) {
             return method.invoke(target, args);
         }
-
+        // 处理目标方法，直接调用目标方法
         Method targetMethod = resolveTargetMethod(method);
         if (targetMethod == null || !targetMethod.isAnnotationPresent(MyLog.class)) {
             return method.invoke(target, args);
         }
         return new JoinPointImpl(target, targetMethod, args, advices).proceed();
     }
-
+    // 处理目标方法，直接调用目标方法
     private Method resolveTargetMethod(Method interfaceMethod) {
         try {
             return target.getClass().getMethod(

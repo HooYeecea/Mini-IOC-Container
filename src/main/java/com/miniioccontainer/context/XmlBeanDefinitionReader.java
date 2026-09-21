@@ -16,6 +16,7 @@ import java.util.List;
  * 支持：
  * - &lt;component-scan base-package="..."/&gt;
  * - &lt;bean id class primary&gt;
+ * - &lt;constructor-arg ref/&gt;
  * - &lt;property name ref/&gt;
  */
 public class XmlBeanDefinitionReader {
@@ -96,6 +97,14 @@ public class XmlBeanDefinitionReader {
                 continue;
             }
             Element child = (Element) node;
+            if ("constructor-arg".equals(child.getTagName())) {
+                String ref = child.getAttribute("ref").trim();
+                if (ref.isEmpty()) {
+                    throw new RuntimeException("<constructor-arg> 缺少 ref");
+                }
+                definition.getConstructorArgRefs().add(ref);
+                continue;
+            }
             if (!"property".equals(child.getTagName())) {
                 throw new RuntimeException("<bean> 下不支持的标签: <" + child.getTagName() + ">");
             }

@@ -11,6 +11,7 @@ public class XmlBeanDefinition {
     private final String id;
     private final String className;
     private final boolean primary;
+    private final List<String> constructorArgRefs = new ArrayList<>();
     private final List<Property> properties = new ArrayList<>();
 
     public XmlBeanDefinition(String id, String className, boolean primary) {
@@ -29,6 +30,10 @@ public class XmlBeanDefinition {
 
     public boolean isPrimary() {
         return primary;
+    }
+
+    public List<String> getConstructorArgRefs() {
+        return constructorArgRefs;
     }
 
     public List<Property> getProperties() {

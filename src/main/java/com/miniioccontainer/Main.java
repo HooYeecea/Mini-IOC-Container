@@ -1,6 +1,10 @@
 package com.miniioccontainer;
 
 import com.miniioccontainer.context.MiniApplicationContext;
+import com.miniioccontainer.demo.AuditService;
+import com.miniioccontainer.demo.CircularA;
+import com.miniioccontainer.demo.CircularB;
+import com.miniioccontainer.demo.OrderFacade;
 import com.miniioccontainer.demo.OrderService;
 import com.miniioccontainer.demo.SmsService;
 import com.miniioccontainer.demo.UserService;
@@ -37,5 +41,16 @@ public class Main {
         System.out.println("smsService.send() = " + smsService.send());
 
         System.out.println("orderServiceFromXml = " + context.getBean("orderServiceFromXml"));
+
+        CircularA circularA = context.getBean(CircularA.class);
+        CircularB circularB = context.getBean(CircularB.class);
+        System.out.println(circularA.describe());
+        System.out.println(circularB.describe());
+
+        OrderFacade orderFacade = context.getBean(OrderFacade.class);
+        System.out.println("orderFacade = " + orderFacade.describe());
+
+        AuditService auditService = (AuditService) context.getBean("auditService");
+        System.out.println("auditService.audit() = " + auditService.audit());
     }
 }

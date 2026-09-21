@@ -7,6 +7,11 @@
         <property name="orderService" ref="orderServiceImpl"/>
     </bean>
 
+    <!-- 纯 XML 构造器注入 -->
+    <bean id="auditService" class="com.miniioccontainer.demo.AuditService">
+        <constructor-arg ref="orderServiceImpl"/>
+    </bean>
+
     <!-- 同类已有 @MyComponent，注解优先，这条会被跳过 -->
     <bean id="orderServiceFromXml" class="com.miniioccontainer.demo.OrderServiceImpl"/>
 </beans>
