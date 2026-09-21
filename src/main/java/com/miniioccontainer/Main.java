@@ -33,6 +33,16 @@ public class Main {
                 + Proxy.isProxyClass(userService.getOrderServiceV2().getClass()));
         System.out.println("userService.orderServiceV2 = "
                 + userService.getOrderServiceV2().getName());
+        System.out.print("userService.orderServices = ");
+        for (int i = 0; i < userService.getOrderServices().size(); i++) {
+            if (i > 0) {
+                System.out.print(", ");
+            }
+            System.out.print(userService.getOrderServices().get(i).getName());
+        }
+        System.out.println();
+        System.out.println("userService.orderServiceMap = "
+                + userService.getOrderServiceMap().keySet());
 
         OrderService v2 = context.getBean(OrderService.class, "orderServiceV2");
         System.out.println("getBean(OrderService.class, \"orderServiceV2\") = "

@@ -21,6 +21,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.lang.reflect.WildcardType;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -273,11 +276,14 @@ public class MiniApplicationContext {
     private Object[] resolveConstructorArguments(BeanDefinition definition, Constructor<?> constructor) {
         Parameter[] parameters = constructor.getParameters();
         Class<?>[] types = constructor.getParameterTypes();
+        Type[] genericTypes = constructor.getGenericParameterTypes();
         Object[] args = new Object[parameters.length];
         for (int i = 0; i < parameters.length; i++) {
             MyQualifier qualifier = parameters[i].getAnnotation(MyQualifier.class);
             String qualifierValue = qualifier == null ? "" : qualifier.value();
-            Object dependency = resolveByType(types[i], qualifierValue);
+            Object dependency = resolveDependency(
+                    types[i], genericTypes[i], "", qualifierValue,
+                    "构造器 " + definition.clazz.getName());
             if (dependency == null) {
                 throw new RuntimeException(
                         "找不到类型为 " + types[i].getName()
@@ -346,7 +352,7 @@ public class MiniApplicationContext {
             if (i > 0) {
                 sb.append(", ");
             }
-            sb.append(MiniAopInterceptor.unwrap(dependencies[i]).getClass().getSimpleName());
+            sb.append(describeDependency(dependencies[i]));
         }
         return sb.toString();
     }
@@ -483,6 +489,7 @@ public class MiniApplicationContext {
      * 1. @MyAutowired(name = "...") 按名字直接拿
      * 2. @MyQualifier 在同类型候选里按限定名精确匹配
      * 3. 按类型查找；多个候选时选唯一的 @MyPrimary / XML primary
+     * 4. List / Map 注入该类型的全部候选，不再要求唯一
      */
     private void injectDependencies(Object bean) {
         Class<?> clazz = bean.getClass();
@@ -495,41 +502,145 @@ public class MiniApplicationContext {
 
             MyAutowired annotation = field.getAnnotation(MyAutowired.class);
             String name = annotation.name();
-
-            Object dependency;
-            if (!name.isEmpty()) {
-                dependency = getBean(name);
-                if (dependency == null) {
-                    throw new RuntimeException(
-                            "找不到名为 " + name + " 的 Bean（注入到 "
-                                    + clazz.getName() + "." + field.getName() + "）");
-                }
-            } else {
-                String qualifier = "";
-                if (field.isAnnotationPresent(MyQualifier.class)) {
-                    qualifier = field.getAnnotation(MyQualifier.class).value();
-                }
-                dependency = resolveByType(field.getType(), qualifier);
-                if (dependency == null) {
-                    throw new RuntimeException(
-                            "找不到类型为 " + field.getType().getName()
-                                    + " 的 Bean（注入到 "
-                                    + clazz.getName() + "." + field.getName() + "）");
-                }
+            String qualifier = "";
+            if (field.isAnnotationPresent(MyQualifier.class)) {
+                qualifier = field.getAnnotation(MyQualifier.class).value();
+            }
+            String where = clazz.getName() + "." + field.getName();
+            Object dependency = resolveDependency(
+                    field.getType(), field.getGenericType(), name, qualifier, where);
+            if (dependency == null) {
+                throw new RuntimeException(
+                        "找不到类型为 " + field.getType().getName()
+                                + " 的 Bean（注入到 " + where + "）");
             }
 
             try {
                 field.setAccessible(true);
                 field.set(bean, dependency);
-                Object injected = MiniAopInterceptor.unwrap(dependency);
                 System.out.println("注入: " + clazz.getSimpleName()
                         + "." + field.getName() + " <- "
-                        + injected.getClass().getSimpleName()
-                        + (injected != dependency ? " (AOP 代理)" : ""));
+                        + describeDependency(dependency));
             } catch (IllegalAccessException e) {
                 throw new RuntimeException("注入失败: " + field.getName(), e);
             }
         }
+    }
+
+    /**
+     * 单个 Bean 仍走名字 / Qualifier / Primary。
+     * List 与 Map 收集全部同类型候选，Map 的 key 是 Bean 名。
+     */
+    private Object resolveDependency(Class<?> type,
+                                     Type genericType,
+                                     String beanName,
+                                     String qualifier,
+                                     String where) {
+        if (List.class.equals(type) || Map.class.equals(type)) {
+            if (beanName != null && !beanName.isEmpty()) {
+                throw new RuntimeException(
+                        "@MyAutowired(name) 不能用在 List/Map 上（" + where + "）");
+            }
+            Class<?> elementType = collectionElementType(type, genericType, where);
+            if (List.class.equals(type)) {
+                return beansOfType(elementType, qualifier);
+            }
+            requireMapKey(genericType, where);
+            return mapOfType(elementType, qualifier);
+        }
+        if (beanName != null && !beanName.isEmpty()) {
+            Object dependency = getBean(beanName);
+            if (dependency == null) {
+                throw new RuntimeException(
+                        "找不到名为 " + beanName + " 的 Bean（注入到 " + where + "）");
+            }
+            return dependency;
+        }
+        return resolveByType(type, qualifier);
+    }
+
+    private Class<?> collectionElementType(Class<?> rawType, Type genericType, String where) {
+        if (!(genericType instanceof ParameterizedType parameterizedType)) {
+            throw new RuntimeException(where + " 的 " + rawType.getSimpleName() + " 必须声明元素类型");
+        }
+        Type[] arguments = parameterizedType.getActualTypeArguments();
+        int index = Map.class.equals(rawType) ? 1 : 0;
+        return toClass(arguments[index], where);
+    }
+
+    private void requireMapKey(Type genericType, String where) {
+        Type key = ((ParameterizedType) genericType).getActualTypeArguments()[0];
+        if (key != String.class) {
+            throw new RuntimeException(where + " 的 Map key 必须是 String，实际是 " + key.getTypeName());
+        }
+    }
+
+    private Class<?> toClass(Type type, String where) {
+        if (type instanceof Class<?> clazz) {
+            return clazz;
+        }
+        if (type instanceof ParameterizedType parameterizedType) {
+            return toClass(parameterizedType.getRawType(), where);
+        }
+        if (type instanceof WildcardType wildcardType) {
+            return toClass(wildcardType.getUpperBounds()[0], where);
+        }
+        throw new RuntimeException(where + " 无法解析类型: " + type.getTypeName());
+    }
+
+    private <T> List<T> beansOfType(Class<T> type, String qualifier) {
+        List<T> result = new ArrayList<>();
+        for (BeanDefinition definition : matchingDefinitions(type, qualifier)) {
+            result.add(adapt(type, definition.name));
+        }
+        return result;
+    }
+
+    private <T> Map<String, T> mapOfType(Class<T> type, String qualifier) {
+        Map<String, T> result = new LinkedHashMap<>();
+        for (BeanDefinition definition : matchingDefinitions(type, qualifier)) {
+            result.put(definition.name, adapt(type, definition.name));
+        }
+        return result;
+    }
+
+    private List<BeanDefinition> matchingDefinitions(Class<?> type, String qualifier) {
+        List<BeanDefinition> candidates = findDefinitionsByType(type);
+        if (qualifier == null || qualifier.isEmpty()) {
+            return candidates;
+        }
+        List<BeanDefinition> matched = new ArrayList<>();
+        for (BeanDefinition definition : candidates) {
+            if (qualifierMatches(definition, qualifier)) {
+                matched.add(definition);
+            }
+        }
+        if (matched.isEmpty()) {
+            throw new RuntimeException(
+                    "找不到类型为 " + type.getName()
+                            + " 且 @MyQualifier(\"" + qualifier + "\") 的 Bean");
+        }
+        return matched;
+    }
+
+    private String describeDependency(Object dependency) {
+        if (dependency instanceof List<?> list) {
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < list.size(); i++) {
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append(MiniAopInterceptor.unwrap(list.get(i)).getClass().getSimpleName());
+            }
+            sb.append("]");
+            return sb.toString();
+        }
+        if (dependency instanceof Map<?, ?> map) {
+            return map.keySet().toString();
+        }
+        Object unwrapped = MiniAopInterceptor.unwrap(dependency);
+        return unwrapped.getClass().getSimpleName()
+                + (unwrapped != dependency ? " (AOP 代理)" : "");
     }
 
     private void applyXmlProperties(BeanDefinition definition, Object bean) {
@@ -629,6 +740,26 @@ public class MiniApplicationContext {
      */
     public <T> T getBean(Class<T> type, String qualifier) {
         return resolveByType(type, qualifier);
+    }
+
+    /**
+     * 该类型的全部 Bean，按注册顺序。没有候选时返回空列表。
+     */
+    public <T> List<T> getBeans(Class<T> type) {
+        if (closed) {
+            throw new RuntimeException("容器已关闭");
+        }
+        return beansOfType(type, "");
+    }
+
+    /**
+     * 该类型的全部 Bean，key 是 Bean 名。没有候选时返回空 Map。
+     */
+    public <T> Map<String, T> getBeansOfType(Class<T> type) {
+        if (closed) {
+            throw new RuntimeException("容器已关闭");
+        }
+        return mapOfType(type, "");
     }
 
     /**
