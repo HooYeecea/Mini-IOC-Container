@@ -1,10 +1,12 @@
 package com.miniioccontainer;
 
 import com.miniioccontainer.context.MiniApplicationContext;
+import com.miniioccontainer.demo.AppSettings;
 import com.miniioccontainer.demo.AuditService;
 import com.miniioccontainer.demo.CircularA;
 import com.miniioccontainer.demo.CircularB;
 import com.miniioccontainer.demo.LazyReport;
+import com.miniioccontainer.demo.MailSettings;
 import com.miniioccontainer.demo.OrderFacade;
 import com.miniioccontainer.demo.OrderService;
 import com.miniioccontainer.demo.SmsService;
@@ -79,6 +81,11 @@ public class Main {
         LazyReport lazy1 = context.getBean(LazyReport.class);
         LazyReport lazy2 = context.getBean(LazyReport.class);
         System.out.println("lazy same instance = " + (lazy1 == lazy2));
+
+        AppSettings appSettings = context.getBean(AppSettings.class);
+        System.out.println("appSettings = " + appSettings.describe());
+        MailSettings mailSettings = (MailSettings) context.getBean("mailSettings");
+        System.out.println("mailSettings = " + mailSettings.describe());
 
         context.close();
     }

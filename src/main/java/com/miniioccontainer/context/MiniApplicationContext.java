@@ -10,6 +10,7 @@ import com.miniioccontainer.annotation.MyPreDestroy;
 import com.miniioccontainer.annotation.MyPrimary;
 import com.miniioccontainer.annotation.MyQualifier;
 import com.miniioccontainer.annotation.MyScope;
+import com.miniioccontainer.annotation.MyValue;
 import com.miniioccontainer.aop.AopAdvice;
 import com.miniioccontainer.aop.AopProxyFactory;
 import com.miniioccontainer.aop.MiniAopInterceptor;
@@ -124,7 +125,7 @@ public class MiniApplicationContext {
         String beanName = definition.getId().isEmpty() ? getBeanName(clazz) : definition.getId();
         String scope = scopeOf(clazz, definition.getScope());
         registerDefinition(beanName, clazz, definition.isPrimary(),
-                definition.getConstructorArgRefs(), definition.getProperties(),
+                definition.getConstructorArgs(), definition.getProperties(),
                 definition.getInitMethod(), definition.getDestroyMethod(),
                 scope, lazyOf(clazz, definition.getLazyInit(), scope), "XML");
     }
@@ -132,7 +133,7 @@ public class MiniApplicationContext {
     private void registerDefinition(String beanName,
                                     Class<?> clazz,
                                     boolean primary,
-                                    List<String> constructorArgRefs,
+                                    List<XmlBeanDefinition.ConstructorArg> constructorArgs,
                                     List<XmlBeanDefinition.Property> properties,
                                     String initMethod,
                                     String destroyMethod,
@@ -156,7 +157,7 @@ public class MiniApplicationContext {
             throw new RuntimeException("切面不能懒加载: " + clazz.getName());
         }
         beanDefinitions.put(beanName, new BeanDefinition(
-                beanName, clazz, constructorArgRefs, properties, initMethod, destroyMethod,
+                beanName, clazz, constructorArgs, properties, initMethod, destroyMethod,
                 "prototype".equals(scope), lazy));
         if (primary) {
             primaryBeanNames.add(beanName);
@@ -229,7 +230,7 @@ public class MiniApplicationContext {
      */
     private Object instantiate(BeanDefinition definition) {
         try {
-            if (!definition.constructorArgRefs.isEmpty()) {
+            if (!definition.constructorArgs.isEmpty()) {
                 return instantiateWithXmlArgs(definition);
             }
             Constructor<?> constructor = chooseConstructor(definition.clazz);
@@ -279,6 +280,12 @@ public class MiniApplicationContext {
         Type[] genericTypes = constructor.getGenericParameterTypes();
         Object[] args = new Object[parameters.length];
         for (int i = 0; i < parameters.length; i++) {
+            MyValue valueAnnotation = parameters[i].getAnnotation(MyValue.class);
+            if (valueAnnotation != null) {
+                args[i] = convertValue(valueAnnotation.value(), types[i],
+                        "构造器 " + definition.clazz.getName());
+                continue;
+            }
             MyQualifier qualifier = parameters[i].getAnnotation(MyQualifier.class);
             String qualifierValue = qualifier == null ? "" : qualifier.value();
             Object dependency = resolveDependency(
@@ -299,46 +306,52 @@ public class MiniApplicationContext {
     }
 
     private Object instantiateWithXmlArgs(BeanDefinition definition) {
-        List<String> refs = definition.constructorArgRefs;
-        Object[] args = new Object[refs.size()];
-        for (int i = 0; i < refs.size(); i++) {
-            Object dependency = getBean(refs.get(i));
-            if (dependency == null) {
-                throw new RuntimeException(
-                        "XML 找不到 constructor-arg ref=\"" + refs.get(i)
-                                + "\" 的 Bean（" + definition.name + "）");
-            }
-            args[i] = dependency;
-        }
-
+        List<XmlBeanDefinition.ConstructorArg> xmlArgs = definition.constructorArgs;
         Constructor<?> matched = null;
+        Object[] resolved = null;
         for (Constructor<?> constructor : definition.clazz.getDeclaredConstructors()) {
-            if (constructor.getParameterCount() != args.length) {
+            if (constructor.getParameterCount() != xmlArgs.size()) {
                 continue;
             }
             Class<?>[] types = constructor.getParameterTypes();
+            Object[] candidate = new Object[xmlArgs.size()];
             boolean compatible = true;
-            for (int i = 0; i < types.length; i++) {
-                if (!types[i].isInstance(args[i])) {
+            for (int i = 0; i < xmlArgs.size(); i++) {
+                XmlBeanDefinition.ConstructorArg arg = xmlArgs.get(i);
+                Object value;
+                if (arg.isValue()) {
+                    value = convertValue(arg.getValue(), types[i],
+                            "XML 构造器 " + definition.name);
+                } else {
+                    value = getBean(arg.getRef());
+                    if (value == null) {
+                        throw new RuntimeException(
+                                "XML 找不到 constructor-arg ref=\"" + arg.getRef()
+                                        + "\" 的 Bean（" + definition.name + "）");
+                    }
+                }
+                if (!isAssignable(types[i], value)) {
                     compatible = false;
                     break;
                 }
+                candidate[i] = value;
             }
             if (compatible) {
                 matched = constructor;
+                resolved = candidate;
                 break;
             }
         }
         if (matched == null) {
             throw new RuntimeException(
                     "XML Bean " + definition.name + " 找不到匹配 "
-                            + args.length + " 个 constructor-arg 的构造器");
+                            + xmlArgs.size() + " 个 constructor-arg 的构造器");
         }
         try {
             matched.setAccessible(true);
             System.out.println("XML 构造注入: " + definition.clazz.getSimpleName()
-                    + " <- " + String.join(", ", refs));
-            return matched.newInstance(args);
+                    + " <- " + joinDependencyNames(resolved));
+            return matched.newInstance(resolved);
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
@@ -496,23 +509,34 @@ public class MiniApplicationContext {
         Field[] fields = clazz.getDeclaredFields();
 
         for (Field field : fields) {
-            if (!field.isAnnotationPresent(MyAutowired.class)) {
+            boolean hasValue = field.isAnnotationPresent(MyValue.class);
+            boolean hasAutowired = field.isAnnotationPresent(MyAutowired.class);
+            if (!hasValue && !hasAutowired) {
                 continue;
             }
-
-            MyAutowired annotation = field.getAnnotation(MyAutowired.class);
-            String name = annotation.name();
-            String qualifier = "";
-            if (field.isAnnotationPresent(MyQualifier.class)) {
-                qualifier = field.getAnnotation(MyQualifier.class).value();
-            }
-            String where = clazz.getName() + "." + field.getName();
-            Object dependency = resolveDependency(
-                    field.getType(), field.getGenericType(), name, qualifier, where);
-            if (dependency == null) {
+            if (hasValue && hasAutowired) {
                 throw new RuntimeException(
-                        "找不到类型为 " + field.getType().getName()
-                                + " 的 Bean（注入到 " + where + "）");
+                        field.getName() + " 不能同时使用 @MyValue 和 @MyAutowired");
+            }
+
+            String where = clazz.getName() + "." + field.getName();
+            Object dependency;
+            if (hasValue) {
+                dependency = convertValue(field.getAnnotation(MyValue.class).value(),
+                        field.getType(), where);
+            } else {
+                MyAutowired annotation = field.getAnnotation(MyAutowired.class);
+                String qualifier = "";
+                if (field.isAnnotationPresent(MyQualifier.class)) {
+                    qualifier = field.getAnnotation(MyQualifier.class).value();
+                }
+                dependency = resolveDependency(
+                        field.getType(), field.getGenericType(), annotation.name(), qualifier, where);
+                if (dependency == null) {
+                    throw new RuntimeException(
+                            "找不到类型为 " + field.getType().getName()
+                                    + " 的 Bean（注入到 " + where + "）");
+                }
             }
 
             try {
@@ -624,6 +648,9 @@ public class MiniApplicationContext {
     }
 
     private String describeDependency(Object dependency) {
+        if (dependency instanceof String || dependency instanceof Number || dependency instanceof Boolean) {
+            return String.valueOf(dependency);
+        }
         if (dependency instanceof List<?> list) {
             StringBuilder sb = new StringBuilder("[");
             for (int i = 0; i < list.size(); i++) {
@@ -645,12 +672,19 @@ public class MiniApplicationContext {
 
     private void applyXmlProperties(BeanDefinition definition, Object bean) {
         for (XmlBeanDefinition.Property property : definition.properties) {
-            Object dependency = getBean(property.getRef());
-            if (dependency == null) {
-                throw new RuntimeException(
-                        "XML 找不到 ref=\"" + property.getRef()
-                                + "\" 的 Bean（注入到 " + definition.name
-                                + "." + property.getName() + "）");
+            Object dependency;
+            if (property.isValue()) {
+                Class<?> type = propertyType(bean, property.getName(), definition.name);
+                dependency = convertValue(property.getValue(), type,
+                        definition.name + "." + property.getName());
+            } else {
+                dependency = getBean(property.getRef());
+                if (dependency == null) {
+                    throw new RuntimeException(
+                            "XML 找不到 ref=\"" + property.getRef()
+                                    + "\" 的 Bean（注入到 " + definition.name
+                                    + "." + property.getName() + "）");
+                }
             }
             if (!injectFieldByName(bean, property.getName(), dependency)
                     && !injectSetter(bean, property.getName(), dependency)) {
@@ -658,8 +692,74 @@ public class MiniApplicationContext {
                         "XML Bean " + definition.name + " 找不到属性: " + property.getName());
             }
             System.out.println("XML 注入: " + bean.getClass().getSimpleName()
-                    + "." + property.getName() + " <- " + property.getRef());
+                    + "." + property.getName() + " <- " + describeDependency(dependency));
         }
+    }
+
+    private Class<?> propertyType(Object bean, String propertyName, String beanName) {
+        Class<?> current = bean.getClass();
+        while (current != null) {
+            try {
+                return current.getDeclaredField(propertyName).getType();
+            } catch (NoSuchFieldException e) {
+                current = current.getSuperclass();
+            }
+        }
+        String setterName = "set" + Character.toUpperCase(propertyName.charAt(0))
+                + propertyName.substring(1);
+        for (Method method : bean.getClass().getMethods()) {
+            if (method.getName().equals(setterName) && method.getParameterCount() == 1) {
+                return method.getParameterTypes()[0];
+            }
+        }
+        throw new RuntimeException("XML Bean " + beanName + " 找不到属性: " + propertyName);
+    }
+
+    private Object convertValue(String raw, Class<?> type, String where) {
+        try {
+            if (type == String.class) {
+                return raw;
+            }
+            if (type == int.class || type == Integer.class) {
+                return Integer.valueOf(raw);
+            }
+            if (type == long.class || type == Long.class) {
+                return Long.valueOf(raw);
+            }
+            if (type == double.class || type == Double.class) {
+                return Double.valueOf(raw);
+            }
+            if (type == boolean.class || type == Boolean.class) {
+                if (!"true".equalsIgnoreCase(raw) && !"false".equalsIgnoreCase(raw)) {
+                    throw new IllegalArgumentException("布尔值只能是 true 或 false");
+                }
+                return Boolean.valueOf(raw);
+            }
+        } catch (RuntimeException e) {
+            throw new RuntimeException("配置值转换失败: \"" + raw + "\" -> "
+                    + type.getSimpleName() + "（" + where + "）", e);
+        }
+        throw new RuntimeException("不支持的配置类型 " + type.getSimpleName() + "（" + where + "）");
+    }
+
+    private boolean isAssignable(Class<?> type, Object value) {
+        if (value == null) {
+            return !type.isPrimitive();
+        }
+        if (type.isInstance(value)) {
+            return true;
+        }
+        if (!type.isPrimitive()) {
+            return false;
+        }
+        Class<?> wrapper = switch (type.getName()) {
+            case "int" -> Integer.class;
+            case "long" -> Long.class;
+            case "double" -> Double.class;
+            case "boolean" -> Boolean.class;
+            default -> null;
+        };
+        return wrapper != null && wrapper.isInstance(value);
     }
 
     private boolean injectFieldByName(Object bean, String fieldName, Object dependency) {
@@ -978,7 +1078,7 @@ public class MiniApplicationContext {
     private static final class BeanDefinition {
         private final String name;
         private final Class<?> clazz;
-        private final List<String> constructorArgRefs;
+        private final List<XmlBeanDefinition.ConstructorArg> constructorArgs;
         private final List<XmlBeanDefinition.Property> properties;
         private final String initMethod;
         private final String destroyMethod;
@@ -987,7 +1087,7 @@ public class MiniApplicationContext {
 
         private BeanDefinition(String name,
                                Class<?> clazz,
-                               List<String> constructorArgRefs,
+                               List<XmlBeanDefinition.ConstructorArg> constructorArgs,
                                List<XmlBeanDefinition.Property> properties,
                                String initMethod,
                                String destroyMethod,
@@ -995,7 +1095,7 @@ public class MiniApplicationContext {
                                boolean lazy) {
             this.name = name;
             this.clazz = clazz;
-            this.constructorArgRefs = constructorArgRefs;
+            this.constructorArgs = constructorArgs;
             this.properties = properties;
             this.initMethod = initMethod;
             this.destroyMethod = destroyMethod;

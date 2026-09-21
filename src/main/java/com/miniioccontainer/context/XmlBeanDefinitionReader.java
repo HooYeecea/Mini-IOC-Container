@@ -103,23 +103,36 @@ public class XmlBeanDefinitionReader {
             }
             Element child = (Element) node;
             if ("constructor-arg".equals(child.getTagName())) {
-                String ref = child.getAttribute("ref").trim();
-                if (ref.isEmpty()) {
-                    throw new RuntimeException("<constructor-arg> 缺少 ref");
-                }
-                definition.getConstructorArgRefs().add(ref);
+                definition.getConstructorArgs().add(parseValueOrRef(child, "<constructor-arg>"));
                 continue;
             }
             if (!"property".equals(child.getTagName())) {
                 throw new RuntimeException("<bean> 下不支持的标签: <" + child.getTagName() + ">");
             }
             String name = child.getAttribute("name").trim();
-            String ref = child.getAttribute("ref").trim();
-            if (name.isEmpty() || ref.isEmpty()) {
-                throw new RuntimeException("<property> 必须同时有 name 和 ref");
+            if (name.isEmpty()) {
+                throw new RuntimeException("<property> 缺少 name");
             }
-            definition.getProperties().add(new XmlBeanDefinition.Property(name, ref));
+            XmlBeanDefinition.ConstructorArg arg = parseValueOrRef(child, "<property>");
+            definition.getProperties().add(new XmlBeanDefinition.Property(
+                    name, arg.getRef(), arg.getValue(), arg.isValue()));
         }
         return definition;
+    }
+
+    private static XmlBeanDefinition.ConstructorArg parseValueOrRef(Element element, String tag) {
+        boolean hasRef = element.hasAttribute("ref");
+        boolean hasValue = element.hasAttribute("value");
+        if (hasRef == hasValue) {
+            throw new RuntimeException(tag + " 必须且只能指定 ref 或 value 其中一个");
+        }
+        if (hasRef) {
+            String ref = element.getAttribute("ref").trim();
+            if (ref.isEmpty()) {
+                throw new RuntimeException(tag + " 的 ref 不能为空");
+            }
+            return new XmlBeanDefinition.ConstructorArg(ref, null, false);
+        }
+        return new XmlBeanDefinition.ConstructorArg(null, element.getAttribute("value"), true);
     }
 }
