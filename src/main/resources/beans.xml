@@ -13,6 +13,9 @@
         <constructor-arg ref="orderServiceImpl"/>
     </bean>
 
+    <!-- 纯 XML 原型：每次 getBean 新建，容器关闭时不销毁 -->
+    <bean id="reportJob" class="com.miniioccontainer.demo.ReportJob" scope="prototype"/>
+
     <!-- 同类已有 @MyComponent，注解优先，这条会被跳过 -->
     <bean id="orderServiceFromXml" class="com.miniioccontainer.demo.OrderServiceImpl"/>
 </beans>

@@ -90,8 +90,9 @@ public class XmlBeanDefinitionReader {
         boolean primary = Boolean.parseBoolean(beanElement.getAttribute("primary"));
         String initMethod = beanElement.getAttribute("init-method").trim();
         String destroyMethod = beanElement.getAttribute("destroy-method").trim();
+        String scope = beanElement.getAttribute("scope").trim();
         XmlBeanDefinition definition = new XmlBeanDefinition(
-                id, className, primary, initMethod, destroyMethod);
+                id, className, primary, initMethod, destroyMethod, scope);
 
         NodeList children = beanElement.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {

@@ -53,6 +53,17 @@ public class Main {
         AuditService auditService = (AuditService) context.getBean("auditService");
         System.out.println("auditService.audit() = " + auditService.audit());
 
+        UserService again = context.getBean(UserService.class);
+        System.out.println("singleton same instance = " + (userService == again));
+
+        Object token1 = context.getBean("taskToken");
+        Object token2 = context.getBean("taskToken");
+        System.out.println("prototype same instance = " + (token1 == token2));
+
+        Object job1 = context.getBean("reportJob");
+        Object job2 = context.getBean("reportJob");
+        System.out.println("xml prototype same instance = " + (job1 == job2));
+
         context.close();
     }
 }

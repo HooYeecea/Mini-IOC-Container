@@ -8,6 +8,7 @@ import com.miniioccontainer.annotation.MyPostConstruct;
 import com.miniioccontainer.annotation.MyPreDestroy;
 import com.miniioccontainer.annotation.MyPrimary;
 import com.miniioccontainer.annotation.MyQualifier;
+import com.miniioccontainer.annotation.MyScope;
 import com.miniioccontainer.aop.AopAdvice;
 import com.miniioccontainer.aop.AopProxyFactory;
 import com.miniioccontainer.aop.MiniAopInterceptor;
@@ -83,6 +84,9 @@ public class MiniApplicationContext {
         preInstantiateAspects();
         advices = collectAroundAdvices();
         for (String beanName : new ArrayList<>(beanDefinitions.keySet())) {
+            if (beanDefinitions.get(beanName).prototype) {
+                continue;
+            }
             getBean(beanName);
         }
     }
@@ -92,7 +96,7 @@ public class MiniApplicationContext {
         for (Class<?> clazz : classes) {
             String beanName = getBeanName(clazz);
             registerDefinition(beanName, clazz, clazz.isAnnotationPresent(MyPrimary.class),
-                    List.of(), List.of(), "", "", "注解");
+                    List.of(), List.of(), "", "", scopeOf(clazz, ""), "注解");
         }
     }
 
@@ -115,7 +119,8 @@ public class MiniApplicationContext {
         String beanName = definition.getId().isEmpty() ? getBeanName(clazz) : definition.getId();
         registerDefinition(beanName, clazz, definition.isPrimary(),
                 definition.getConstructorArgRefs(), definition.getProperties(),
-                definition.getInitMethod(), definition.getDestroyMethod(), "XML");
+                definition.getInitMethod(), definition.getDestroyMethod(),
+                scopeOf(clazz, definition.getScope()), "XML");
     }
 
     private void registerDefinition(String beanName,
@@ -125,6 +130,7 @@ public class MiniApplicationContext {
                                     List<XmlBeanDefinition.Property> properties,
                                     String initMethod,
                                     String destroyMethod,
+                                    String scope,
                                     String source) {
         BeanDefinition existing = beanDefinitions.get(beanName);
         if (existing != null) {
@@ -136,12 +142,32 @@ public class MiniApplicationContext {
                             + "，已有 " + existing.clazz.getName()
                             + "，又注册 " + clazz.getName());
         }
+        if (clazz.isAnnotationPresent(MyAspect.class) && "prototype".equals(scope)) {
+            throw new RuntimeException("切面必须是单例: " + clazz.getName());
+        }
         beanDefinitions.put(beanName, new BeanDefinition(
-                beanName, clazz, constructorArgRefs, properties, initMethod, destroyMethod));
+                beanName, clazz, constructorArgRefs, properties, initMethod, destroyMethod,
+                "prototype".equals(scope)));
         if (primary) {
             primaryBeanNames.add(beanName);
         }
-        System.out.println("注册 Bean: " + beanName + " (" + source + ")");
+        System.out.println("注册 Bean: " + beanName + " (" + source
+                + ("prototype".equals(scope) ? ", prototype" : "") + ")");
+    }
+
+    /**
+     * XML 写了 scope 就用 XML 的；否则看类上的 @MyScope；都没有则是 singleton。
+     */
+    private String scopeOf(Class<?> clazz, String xmlScope) {
+        String scope = xmlScope == null ? "" : xmlScope.trim();
+        if (scope.isEmpty()) {
+            MyScope annotation = clazz.getAnnotation(MyScope.class);
+            scope = annotation == null ? "singleton" : annotation.value().trim();
+        }
+        if (!"singleton".equals(scope) && !"prototype".equals(scope)) {
+            throw new RuntimeException("不支持的 scope: " + scope + "（" + clazz.getName() + "）");
+        }
+        return scope;
     }
 
     private boolean hasDefinitionOfClass(Class<?> clazz) {
@@ -319,6 +345,26 @@ public class MiniApplicationContext {
             return exposed;
         } finally {
             beansInCreation.remove(beanName);
+            creationStack.removeLast();
+        }
+    }
+
+    /**
+     * 原型每次都新建：会初始化，但不进单例缓存，关闭容器时也不销毁。
+     * 创建过程中再次要到自己，直接失败，不提前暴露。
+     */
+    private Object createPrototype(BeanDefinition definition) {
+        beansInCreation.add(definition.name);
+        creationStack.addLast(definition.name);
+        try {
+            Object target = instantiate(definition);
+            Object exposed = expose(definition.name, target);
+            injectDependencies(target);
+            applyXmlProperties(definition, target);
+            invokeLifecycle(target, MyPostConstruct.class, definition.initMethod, "初始化");
+            return exposed;
+        } finally {
+            beansInCreation.remove(definition.name);
             creationStack.removeLast();
         }
     }
@@ -514,6 +560,13 @@ public class MiniApplicationContext {
     public Object getBean(String name) {
         if (closed) {
             throw new RuntimeException("容器已关闭");
+        }
+        BeanDefinition definition = beanDefinitions.get(name);
+        if (definition != null && definition.prototype) {
+            if (beansInCreation.contains(name)) {
+                throw new RuntimeException("原型 Bean 不支持循环依赖: " + cyclePath(name));
+            }
+            return createPrototype(definition);
         }
         if (finishedBeanNames.contains(name)) {
             return beans.get(name);
@@ -767,19 +820,22 @@ public class MiniApplicationContext {
         private final List<XmlBeanDefinition.Property> properties;
         private final String initMethod;
         private final String destroyMethod;
+        private final boolean prototype;
 
         private BeanDefinition(String name,
                                Class<?> clazz,
                                List<String> constructorArgRefs,
                                List<XmlBeanDefinition.Property> properties,
                                String initMethod,
-                               String destroyMethod) {
+                               String destroyMethod,
+                               boolean prototype) {
             this.name = name;
             this.clazz = clazz;
             this.constructorArgRefs = constructorArgRefs;
             this.properties = properties;
             this.initMethod = initMethod;
             this.destroyMethod = destroyMethod;
+            this.prototype = prototype;
         }
     }
 }
