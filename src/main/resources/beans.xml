@@ -16,6 +16,10 @@
     <!-- 纯 XML 原型：每次 getBean 新建，容器关闭时不销毁 -->
     <bean id="reportJob" class="com.miniioccontainer.demo.ReportJob" scope="prototype"/>
 
+    <!-- 懒加载单例：Demo 不取用，启动时不创建，关闭时也不销毁 -->
+    <bean id="lazyNote" class="com.miniioccontainer.demo.LazyNote"
+          lazy-init="true" init-method="start" destroy-method="stop"/>
+
     <!-- 同类已有 @MyComponent，注解优先，这条会被跳过 -->
     <bean id="orderServiceFromXml" class="com.miniioccontainer.demo.OrderServiceImpl"/>
 </beans>

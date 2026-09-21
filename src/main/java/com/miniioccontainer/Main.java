@@ -4,6 +4,7 @@ import com.miniioccontainer.context.MiniApplicationContext;
 import com.miniioccontainer.demo.AuditService;
 import com.miniioccontainer.demo.CircularA;
 import com.miniioccontainer.demo.CircularB;
+import com.miniioccontainer.demo.LazyReport;
 import com.miniioccontainer.demo.OrderFacade;
 import com.miniioccontainer.demo.OrderService;
 import com.miniioccontainer.demo.SmsService;
@@ -63,6 +64,11 @@ public class Main {
         Object job1 = context.getBean("reportJob");
         Object job2 = context.getBean("reportJob");
         System.out.println("xml prototype same instance = " + (job1 == job2));
+
+        System.out.println("before getBean LazyReport");
+        LazyReport lazy1 = context.getBean(LazyReport.class);
+        LazyReport lazy2 = context.getBean(LazyReport.class);
+        System.out.println("lazy same instance = " + (lazy1 == lazy2));
 
         context.close();
     }

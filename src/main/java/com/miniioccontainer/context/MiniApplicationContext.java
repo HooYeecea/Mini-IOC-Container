@@ -3,6 +3,7 @@ package com.miniioccontainer.context;
 import com.miniioccontainer.annotation.MyAround;
 import com.miniioccontainer.annotation.MyAspect;
 import com.miniioccontainer.annotation.MyAutowired;
+import com.miniioccontainer.annotation.MyLazy;
 import com.miniioccontainer.annotation.MyLog;
 import com.miniioccontainer.annotation.MyPostConstruct;
 import com.miniioccontainer.annotation.MyPreDestroy;
@@ -84,7 +85,7 @@ public class MiniApplicationContext {
         preInstantiateAspects();
         advices = collectAroundAdvices();
         for (String beanName : new ArrayList<>(beanDefinitions.keySet())) {
-            if (beanDefinitions.get(beanName).prototype) {
+            if (beanDefinitions.get(beanName).prototype || beanDefinitions.get(beanName).lazy) {
                 continue;
             }
             getBean(beanName);
@@ -96,7 +97,8 @@ public class MiniApplicationContext {
         for (Class<?> clazz : classes) {
             String beanName = getBeanName(clazz);
             registerDefinition(beanName, clazz, clazz.isAnnotationPresent(MyPrimary.class),
-                    List.of(), List.of(), "", "", scopeOf(clazz, ""), "注解");
+                    List.of(), List.of(), "", "", scopeOf(clazz, ""),
+                    lazyOf(clazz, "", scopeOf(clazz, "")), "注解");
         }
     }
 
@@ -117,10 +119,11 @@ public class MiniApplicationContext {
         }
 
         String beanName = definition.getId().isEmpty() ? getBeanName(clazz) : definition.getId();
+        String scope = scopeOf(clazz, definition.getScope());
         registerDefinition(beanName, clazz, definition.isPrimary(),
                 definition.getConstructorArgRefs(), definition.getProperties(),
                 definition.getInitMethod(), definition.getDestroyMethod(),
-                scopeOf(clazz, definition.getScope()), "XML");
+                scope, lazyOf(clazz, definition.getLazyInit(), scope), "XML");
     }
 
     private void registerDefinition(String beanName,
@@ -131,6 +134,7 @@ public class MiniApplicationContext {
                                     String initMethod,
                                     String destroyMethod,
                                     String scope,
+                                    boolean lazy,
                                     String source) {
         BeanDefinition existing = beanDefinitions.get(beanName);
         if (existing != null) {
@@ -145,14 +149,41 @@ public class MiniApplicationContext {
         if (clazz.isAnnotationPresent(MyAspect.class) && "prototype".equals(scope)) {
             throw new RuntimeException("切面必须是单例: " + clazz.getName());
         }
+        if (clazz.isAnnotationPresent(MyAspect.class) && lazy) {
+            throw new RuntimeException("切面不能懒加载: " + clazz.getName());
+        }
         beanDefinitions.put(beanName, new BeanDefinition(
                 beanName, clazz, constructorArgRefs, properties, initMethod, destroyMethod,
-                "prototype".equals(scope)));
+                "prototype".equals(scope), lazy));
         if (primary) {
             primaryBeanNames.add(beanName);
         }
-        System.out.println("注册 Bean: " + beanName + " (" + source
-                + ("prototype".equals(scope) ? ", prototype" : "") + ")");
+        StringBuilder label = new StringBuilder("注册 Bean: " + beanName + " (" + source);
+        if ("prototype".equals(scope)) {
+            label.append(", prototype");
+        }
+        if (lazy) {
+            label.append(", lazy");
+        }
+        label.append(")");
+        System.out.println(label);
+    }
+
+    /**
+     * 原型不使用懒加载标记。单例看 XML lazy-init，没写再看 @MyLazy。
+     */
+    private boolean lazyOf(Class<?> clazz, String xmlLazy, String scope) {
+        if ("prototype".equals(scope)) {
+            return false;
+        }
+        String lazy = xmlLazy == null ? "" : xmlLazy.trim();
+        if (!lazy.isEmpty()) {
+            if (!"true".equals(lazy) && !"false".equals(lazy)) {
+                throw new RuntimeException("lazy-init 只能是 true 或 false（" + clazz.getName() + "）");
+            }
+            return Boolean.parseBoolean(lazy);
+        }
+        return clazz.isAnnotationPresent(MyLazy.class);
     }
 
     /**
@@ -821,6 +852,7 @@ public class MiniApplicationContext {
         private final String initMethod;
         private final String destroyMethod;
         private final boolean prototype;
+        private final boolean lazy;
 
         private BeanDefinition(String name,
                                Class<?> clazz,
@@ -828,7 +860,8 @@ public class MiniApplicationContext {
                                List<XmlBeanDefinition.Property> properties,
                                String initMethod,
                                String destroyMethod,
-                               boolean prototype) {
+                               boolean prototype,
+                               boolean lazy) {
             this.name = name;
             this.clazz = clazz;
             this.constructorArgRefs = constructorArgRefs;
@@ -836,6 +869,7 @@ public class MiniApplicationContext {
             this.initMethod = initMethod;
             this.destroyMethod = destroyMethod;
             this.prototype = prototype;
+            this.lazy = lazy;
         }
     }
 }

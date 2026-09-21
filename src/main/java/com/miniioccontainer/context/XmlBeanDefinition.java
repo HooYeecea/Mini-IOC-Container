@@ -14,17 +14,19 @@ public class XmlBeanDefinition {
     private final String initMethod;
     private final String destroyMethod;
     private final String scope;
+    private final String lazyInit;
     private final List<String> constructorArgRefs = new ArrayList<>();
     private final List<Property> properties = new ArrayList<>();
 
     public XmlBeanDefinition(String id, String className, boolean primary,
-                             String initMethod, String destroyMethod, String scope) {
+                             String initMethod, String destroyMethod, String scope, String lazyInit) {
         this.id = id;
         this.className = className;
         this.primary = primary;
         this.initMethod = initMethod;
         this.destroyMethod = destroyMethod;
         this.scope = scope;
+        this.lazyInit = lazyInit;
     }
 
     public String getId() {
@@ -49,6 +51,10 @@ public class XmlBeanDefinition {
 
     public String getScope() {
         return scope;
+    }
+
+    public String getLazyInit() {
+        return lazyInit;
     }
 
     public List<String> getConstructorArgRefs() {
