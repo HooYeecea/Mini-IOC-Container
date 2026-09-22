@@ -54,15 +54,17 @@ public class MiniApplicationContext {
     // XML primary="true" 或类上 @MyPrimary 的 Bean 名
     private final Set<String> primaryBeanNames = new HashSet<>();
     private List<AopAdvice> advices = List.of();
+    private final PropertyPlaceholderResolver placeholders = new PropertyPlaceholderResolver();
 
     /**
-     * location 以 .xml 结尾：从 classpath 读 XML（可含 component-scan）。
-     * 否则：当作包名，只扫 @MyComponent。
+     * location 以 .xml 结尾：从 classpath 读 XML（可含 component-scan / property-placeholder）。
+     * 否则：当作包名，只扫 @MyComponent，并尝试加载 classpath 上的 application.properties。
      */
     public MiniApplicationContext(String location) {
         if (location != null && location.endsWith(".xml")) {
             loadFromXml(location);
         } else {
+            placeholders.loadIfPresent("application.properties");
             registerAnnotationBeans(location);
         }
         refresh();
@@ -70,6 +72,14 @@ public class MiniApplicationContext {
 
     private void loadFromXml(String xmlClasspath) {
         XmlBeanDefinitionReader.Result config = XmlBeanDefinitionReader.load(xmlClasspath);
+
+        for (String propertyLocation : config.getPropertyLocations()) {
+            placeholders.load(propertyLocation);
+        }
+        // 没写 property-placeholder 时，仍尝试加载默认 application.properties
+        if (config.getPropertyLocations().isEmpty()) {
+            placeholders.loadIfPresent("application.properties");
+        }
 
         // 先注册注解 Bean，再注册 XML Bean：同类冲突时注解优先
         for (String basePackage : config.getScanPackages()) {
@@ -716,27 +726,28 @@ public class MiniApplicationContext {
     }
 
     private Object convertValue(String raw, Class<?> type, String where) {
+        String text = placeholders.resolve(raw, where);
         try {
             if (type == String.class) {
-                return raw;
+                return text;
             }
             if (type == int.class || type == Integer.class) {
-                return Integer.valueOf(raw);
+                return Integer.valueOf(text);
             }
             if (type == long.class || type == Long.class) {
-                return Long.valueOf(raw);
+                return Long.valueOf(text);
             }
             if (type == double.class || type == Double.class) {
-                return Double.valueOf(raw);
+                return Double.valueOf(text);
             }
             if (type == boolean.class || type == Boolean.class) {
-                if (!"true".equalsIgnoreCase(raw) && !"false".equalsIgnoreCase(raw)) {
+                if (!"true".equalsIgnoreCase(text) && !"false".equalsIgnoreCase(text)) {
                     throw new IllegalArgumentException("布尔值只能是 true 或 false");
                 }
-                return Boolean.valueOf(raw);
+                return Boolean.valueOf(text);
             }
         } catch (RuntimeException e) {
-            throw new RuntimeException("配置值转换失败: \"" + raw + "\" -> "
+            throw new RuntimeException("配置值转换失败: \"" + text + "\" -> "
                     + type.getSimpleName() + "（" + where + "）", e);
         }
         throw new RuntimeException("不支持的配置类型 " + type.getSimpleName() + "（" + where + "）");

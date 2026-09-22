@@ -6,13 +6,13 @@ import com.miniioccontainer.annotation.MyValue;
 @MyComponent
 public class AppSettings {
 
-    @MyValue("mini-ioc")
+    @MyValue("${app.name}")
     private String appName;
 
-    @MyValue("8080")
+    @MyValue("${app.port}")
     private int port;
 
-    @MyValue("true")
+    @MyValue("${app.debug:false}")
     private boolean debug;
 
     public String describe() {

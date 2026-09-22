@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <beans>
+    <property-placeholder location="application.properties"/>
     <component-scan base-package="com.miniioccontainer.demo"/>
 
     <!-- 纯 XML Bean：没有 @MyComponent，用 property 按名字注入注解 Bean -->
@@ -17,9 +18,9 @@
     <bean id="reportJob" class="com.miniioccontainer.demo.ReportJob" scope="prototype"/>
 
     <bean id="mailSettings" class="com.miniioccontainer.demo.MailSettings">
-        <property name="host" value="smtp.example.com"/>
-        <property name="port" value="25"/>
-        <property name="ssl" value="true"/>
+        <property name="host" value="${mail.host}"/>
+        <property name="port" value="${mail.port}"/>
+        <property name="ssl" value="${mail.ssl}"/>
     </bean>
 
     <!-- 懒加载单例：Demo 不取用，启动时不创建，关闭时也不销毁 -->

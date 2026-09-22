@@ -15,6 +15,7 @@ import java.util.List;
  *
  * 支持：
  * - &lt;component-scan base-package="..."/&gt;
+ * - &lt;property-placeholder location="..."/&gt;
  * - &lt;bean id class primary&gt;
  * - &lt;constructor-arg ref/&gt;
  * - &lt;property name ref/&gt;
@@ -23,10 +24,15 @@ public class XmlBeanDefinitionReader {
 
     public static class Result {
         private final List<String> scanPackages = new ArrayList<>();
+        private final List<String> propertyLocations = new ArrayList<>();
         private final List<XmlBeanDefinition> beans = new ArrayList<>();
 
         public List<String> getScanPackages() {
             return scanPackages;
+        }
+
+        public List<String> getPropertyLocations() {
+            return propertyLocations;
         }
 
         public List<XmlBeanDefinition> getBeans() {
@@ -67,6 +73,17 @@ public class XmlBeanDefinitionReader {
                         throw new RuntimeException("<component-scan> 缺少 base-package");
                     }
                     result.scanPackages.add(basePackage);
+                } else if ("property-placeholder".equals(tag)) {
+                    String location = element.getAttribute("location").trim();
+                    if (location.isEmpty()) {
+                        throw new RuntimeException("<property-placeholder> 缺少 location");
+                    }
+                    for (String item : location.split(",")) {
+                        String trimmed = item.trim();
+                        if (!trimmed.isEmpty()) {
+                            result.propertyLocations.add(trimmed);
+                        }
+                    }
                 } else if ("bean".equals(tag)) {
                     result.beans.add(parseBean(element));
                 } else {
