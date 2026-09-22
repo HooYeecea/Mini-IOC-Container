@@ -4,16 +4,24 @@ A small, from-scratch IoC container for learning how Spring-style dependency inj
 
 It can register beans from annotations, from XML, or from both. After startup, they live in the same container and can depend on each other.
 
+Chinese version: [README(CN).md](README(CN).md)
+
+Part of the parent [MiniSpring](../README.md) reactor. MiniMVC uses this container to discover controllers and advice beans.
+
 ## Features
 
 - Package scan and `@MyComponent` bean registration
-- Field injection with `@MyAutowired`
-- Multiple beans of the same type:
-  - `@MyPrimary` / XML `primary="true"`
-  - `@MyQualifier` or `@MyAutowired(name = "...")`
-- XML config: `<component-scan>`, `<bean>`, `<property ref>`
-- If the same class is configured by both annotation and XML, the **annotation wins**
+- Field injection with `@MyAutowired`; constructor injection (`@MyAutowired` on ctor / XML `<constructor-arg>`)
+- Collection injection: `List` / `Map` of a type
+- Disambiguation: `@MyPrimary` / XML `primary`, `@MyQualifier` / `@MyAutowired(name=...)`
+- Scopes: `@MyScope` / XML `scope` (`singleton` / `prototype`)
+- Lazy singletons: `@MyLazy` / XML `lazy-init`
+- Lifecycle: `@MyPostConstruct` / `@MyPreDestroy`, XML `init-method` / `destroy-method`, `context.close()`
+- Properties: `@MyValue("${...}")`, XML `<property-placeholder>` / `value="${...}"`
+- XML: `<component-scan>`, `<bean>`, `<property ref|value>`, `<constructor-arg>`
+- Same class in annotation + XML → **annotation wins**
 - Simple AOP: `@MyLog` pointcut + `@MyAround`, JDK dynamic proxy (interface-only)
+- Early singleton exposure for simple circular references (singleton field injection)
 
 ## Requirements
 
@@ -22,110 +30,84 @@ It can register beans from annotations, from XML, or from both. After startup, t
 
 ## Quick start
 
+From the parent reactor:
+
+```bash
+mvn -pl MiniIOCContainer -am compile exec:java -Dexec.mainClass=com.miniioccontainer.Main
+```
+
+Or inside this module:
+
 ```bash
 mvn compile exec:java -Dexec.mainClass=com.miniioccontainer.Main
 ```
 
 `Main` loads `beans.xml`, which scans annotation beans and also registers XML-only beans.
 
-You can also start from a package name, annotation-only:
+Annotation-only:
 
 ```java
 MiniApplicationContext context =
         new MiniApplicationContext("com.miniioccontainer.demo");
-
 UserService userService = context.getBean(UserService.class);
 ```
 
-Or from a classpath XML file:
+Classpath XML (argument ending with `.xml`):
 
 ```java
 MiniApplicationContext context = new MiniApplicationContext("beans.xml");
 SmsService smsService = (SmsService) context.getBean("smsService");
 ```
 
-If the constructor argument ends with `.xml`, it is treated as XML. Otherwise it is treated as a base package.
-
 ## Annotations
 
 | Annotation | Target | Role |
 | --- | --- | --- |
-| `@MyComponent` | class | Register the class as a bean. Default name is the decapitalized simple class name (`OrderServiceImpl` → `orderServiceImpl`). |
-| `@MyAutowired` | field | Inject a dependency by type. Use `name` to inject by bean name. |
-| `@MyPrimary` | class | Preferred candidate when several beans share the same type. |
-| `@MyQualifier("beanName")` | field or class | Pick one candidate by name. Takes precedence over `@MyPrimary`. |
-| `@MyAspect` | class | Marks an aspect. Also needs `@MyComponent` (or XML). |
-| `@MyAround` | method | Around advice. Signature must be `Object xxx(MyJoinPoint)`. |
-| `@MyLog` | method | Pointcut marker: intercept this method. |
-
-Example:
-
-```java
-@MyComponent
-public class UserService {
-
-    @MyAutowired
-    private OrderService orderService;          // hits @MyPrimary
-
-    @MyAutowired
-    @MyQualifier("orderServiceV2")
-    private OrderService orderServiceV2;        // exact bean
-}
-```
+| `@MyComponent` | class | Register as a bean (default name: decapitalized simple name) |
+| `@MyAutowired` | field / constructor | Inject by type (optional `name`) |
+| `@MyPrimary` | class | Preferred candidate when several beans share a type |
+| `@MyQualifier("beanName")` | field or class | Pick one candidate by name |
+| `@MyScope("prototype")` | class | Bean scope (`singleton` default) |
+| `@MyLazy` | class | Lazy singleton |
+| `@MyPostConstruct` / `@MyPreDestroy` | method | Lifecycle callbacks |
+| `@MyValue("${key:default}")` | field / ctor param | Property placeholder |
+| `@MyAspect` / `@MyAround` / `@MyLog` | aspect AOP | JDK proxy around `@MyLog` methods |
 
 ## XML
 
 Classpath file: `src/main/resources/beans.xml`
 
-```xml
-<beans>
-    <component-scan base-package="com.miniioccontainer.demo"/>
-
-    <bean id="smsService" class="com.miniioccontainer.demo.SmsService">
-        <property name="orderService" ref="orderServiceImpl"/>
-    </bean>
-
-    <!-- skipped: OrderServiceImpl is already registered by @MyComponent -->
-    <bean id="orderServiceFromXml" class="com.miniioccontainer.demo.OrderServiceImpl"/>
-</beans>
-```
-
 Supported tags:
 
+- `<property-placeholder location="..."/>`
 - `<component-scan base-package="..."/>`
-- `<bean id="..." class="..." primary="true"/>`
-- `<property name="..." ref="..."/>` (field first, then setter)
+- `<bean id scope primary lazy-init init-method destroy-method>`
+- `<property name ref|value>`
+- `<constructor-arg ref|value>`
 
 ## Resolution rules
 
 When injecting by type:
 
 1. `@MyAutowired(name = "...")` → by name
-2. `@MyQualifier` → match bean name (or a qualifier on the bean class)
-3. Single candidate of that type → use it
-4. Multiple candidates → use the unique Primary
+2. `@MyQualifier` → match bean name (or qualifier on the bean class)
+3. Single candidate → use it
+4. Multiple → unique Primary
 5. Still ambiguous → fail fast
 
-When mixing annotation and XML:
-
-- Annotation-only class → annotation bean
-- XML-only class → XML bean
-- Same class in both → keep the annotation bean, skip the XML entry
-- Different classes, same bean name → error
+Annotation vs XML for the same class → keep annotation bean, skip XML entry.
 
 ## AOP
 
-1. Mark target methods with `@MyLog`. The class must implement an interface (JDK proxy).
-2. Write an aspect: `@MyComponent` + `@MyAspect`, with a `@MyAround` method that calls `joinPoint.proceed()`.
-3. The container creates proxies **before** injection, so injected fields receive the proxy.
+1. Mark target methods with `@MyLog` (class must implement an interface — JDK proxy).
+2. Aspect: `@MyComponent` + `@MyAspect`, `@MyAround` calls `joinPoint.proceed()`.
+3. Proxies are created **before** injection so fields receive the proxy.
 
-`OrderServiceImpl.getName()` is intercepted. `OrderServiceV2` has no `@MyLog`, so it is not proxied.
-
-Limitations: no class proxy (CGLIB), no AspectJ `execution(...)` expressions, no `@Before` / `@After`, no XML `<aop:config>`.
+Limitations: no CGLIB, no AspectJ `execution(...)`, no `@Before` / `@After`, no XML `<aop:config>`.
 
 ## Project layout
 
-```
+```text
 src/main/java/com/miniioccontainer/
   annotation/          # IoC + AOP annotations
   aop/                 # JoinPoint, JDK proxy
@@ -134,8 +116,13 @@ src/main/java/com/miniioccontainer/
   Main.java
 src/main/resources/
   beans.xml
+  application.properties
 ```
 
 ## Out of scope
 
-This is a learning container, not a Spring replacement. It does not implement constructor injection, bean scopes, lifecycle callbacks, CGLIB, or the full Spring XML / AspectJ feature set.
+Learning container, not a Spring replacement: no CGLIB, no full Spring XML / AspectJ, no Boot-style auto-configuration.
+
+## License
+
+Personal practice project.
